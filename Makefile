@@ -19,7 +19,10 @@ BUILD_TARGET_DIR = $(BUILD_DIR)/target
 
 -include $(BUILD_TARGET_DIR)/target.mak
 -include $(SRC_DIR)/arch/$(ARCH)/arch.mak
+
 INC_DIRS += -I $(SRC_DIR)/include
+
+#.PHONY: incl
 
 incl:
 ifeq ('$(ARCH)', 'none')
@@ -171,4 +174,30 @@ clean:
 veryclean: clean
 	echo "ARCH = none" > $(BUILD_TARGET_DIR)/target.mak
 	find '$(BUILD_TARGET_DIR)' -type f -name '*.a' -delete
+
+# generate images
+NOC_X ?= 4
+NOC_Y ?= 4
+
+NOC_DIM_X = $(shell seq 1 ${NOC_X})
+NOC_DIM_Y = $(shell seq 1 ${NOC_Y})
+
+genimgs:
+	for x in $(NOC_DIM_X); do \
+		for y in $(NOC_DIM_Y); do \
+			FILENAME=$$x-$$y ; \
+			echo "Making image XY=("$$x","$$y")"; \
+			make genimg X_ADDR=$$x Y_ADDR=$$y ; \
+		done ; \
+	done
+	
+
+X_ADDR ?= 0
+Y_ADDR ?= 0
+
+genimg:
+	@echo "generating for.. " $(X_ADDR) $(Y_ADDR)
+
+# make ucx X_ADDR=$(X_ADDR) Y_ADDR=$(Y_ADDR)
+
 
