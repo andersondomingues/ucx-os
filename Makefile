@@ -57,7 +57,7 @@ run_versatilepb:
 	qemu-system-arm -cpu arm1176 -m 128 -M versatilepb -serial stdio -kernel $(BUILD_TARGET_DIR)/image.elf
 
 ## kernel
-ucx: incl hal libs kernel
+ucx: incl hal libs kernel devices
 	mv *.o $(SRC_DIR)/build/kernel
 	$(AR) $(ARFLAGS) $(BUILD_TARGET_DIR)/libucxos.a \
 		$(BUILD_KERNEL_DIR)/*.o
@@ -73,7 +73,7 @@ semaphore.o: $(SRC_DIR)/kernel/semaphore.c
 pipe.o: $(SRC_DIR)/kernel/pipe.c
 	$(CC) $(CFLAGS) $(SRC_DIR)/kernel/pipe.c
 
-libs: libc.o dump.o malloc.o list.o queue.o
+libs: libc.o dump.o malloc.o list.o queue.o noc.o
 
 queue.o: $(SRC_DIR)/lib/queue.c
 	$(CC) $(CFLAGS) $(SRC_DIR)/lib/queue.c
@@ -85,7 +85,14 @@ dump.o: $(SRC_DIR)/lib/dump.c
 	$(CC) $(CFLAGS) $(SRC_DIR)/lib/dump.c
 libc.o: $(SRC_DIR)/lib/libc.c
 	$(CC) $(CFLAGS) $(SRC_DIR)/lib/libc.c
+noc.o: $(SRC_DIR)/lib/noc.c
+	$(CC) $(CFLAGS) $(SRC_DIR)/lib/noc.c
 		
+devices: ddma.o
+
+ddma.o: $(SRC_DIR)/device/ddma.c
+	$(CC) $(CFLAGS) $(SRC_DIR)/device/ddma.c
+
 ## kernel + application link
 link:
 ifeq ('$(ARCH)', 'avr/atmega32')

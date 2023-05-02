@@ -6,6 +6,8 @@
 #define ERR_COMM_UNFEASIBLE -206 /*!< communication is not feasible */
 #define ERR_COMM_ERROR -207      /*!< general communication error */
 #define ERR_COMM_EMPTY -208      /*!< reception queue is empty */
+#define ERR_OUT_OF_MEMORY -209
+#define ERR_OK -210
 
 #define PKT_HEADER_SIZE 8
 #define PKT_TARGET_CPU 0
@@ -39,7 +41,7 @@
 
 #define MAX_TASKS 255
 
-#include <ucx.h>
+// #include <ucx.h>
 
 // ucx_task_id()
 

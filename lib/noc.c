@@ -1,5 +1,13 @@
-#include <noc.h>
-#include "queue.h"
+#include <ucx.h>
+
+
+#define PANIC_OOM 0
+inline uint32_t panic(uint32_t code){
+  asm("nop");
+  return 0;
+}
+
+
 
 // externs
 uint16_t pktdrv_ports[MAX_TASKS];
@@ -32,88 +40,78 @@ uint32_t ucx_noc_comm_create(uint16_t port)
       return ERR_COMM_ERROR;
 
   // add a new queue to receive packets for that task
-  pktdrv_tqueue[task_id] = ucx_queue_create(NOC_PACKETS_SLOTS);
+  pktdrv_tqueue[task_id] = ucx_queue_create(NOC_PACKET_SLOTS);
 
   // if we cannot create a new queue due to unavailable memory
   // space, return ERR_OUT_OF_MEMORY
-  if (pktdrv_tqueue[id] == 0)
+  if (pktdrv_tqueue[task_id] == 0)
     return ERR_OUT_OF_MEMORY;
   
   // connect the port to the task and return ERR_OK
-  pktdrv_ports[id] = port;
+  pktdrv_ports[task_id] = port;
   return ERR_OK;
 }
 
-
+// Destroys a connection, removing the 
 int32_t hf_comm_destroy()
 {
   int task_id = ucx_task_id();
   int32_t status;
 
   status = _di();
-  while (hf_queue_count(pktdrv_tqueue[id]))
-    hf_queue_addtail(pktdrv_queue, hf_queue_remhead(pktdrv_tqueue[id]));
+
+  // removes all elements from the comm queue, adding them 
+  // to the queue of shared packets
+  while (ucx_queue_count(pktdrv_tqueue[task_id]))
+    ucx_queue_enqueue(pktdrv_queue, ucx_queue_dequeue(pktdrv_tqueue[task_id]));
+  
   _ei(status);
 
-  if (hf_queue_destroy(pktdrv_tqueue[id]))
-  {
-    return ERR_COMM_ERROR;
-  }
-  else
-  {
-    pktdrv_ports[id] = 0;
-
-    return ERR_OK;
-  }
+  // check whether the comm queue was gracefully destroyed. If not,
+  // return ERR_COMM_ERROR
+  if (ucx_queue_destroy(pktdrv_tqueue[task_id])) return ERR_COMM_ERROR;
+  
+  pktdrv_ports[task_id] = 0;
+  return ERR_OK;
 }
 
 
-/**
- * @brief NoC driver: initializes the network interface.
- *
- * A queue for the packet driver is initialized with NOC_PACKET_SLOTS capacity (in packets).
- * The queue is populated with empty packets (pointers to dinamically allocated memory areas)
- * which will be used (shared) among all tasks for the reception of data. The hardware is reset
- * and the NoC interrupt handler is registered. This routine is called during the system boot-up
- * and is dependent on the architecture implementation.
- */
+// Initializes the driver
 void ni_init(void)
 {
-  int32_t i;
-  void *ptr;
+  //kprintf("\nKERNEL: this is core #%d", hf_cpuid());
+  //printf("\nKERNEL: NoC queue init, %d packets", NOC_PACKET_SLOTS);
 
-  kprintf("\nKERNEL: this is core #%d", hf_cpuid());
-  kprintf("\nKERNEL: NoC queue init, %d packets", NOC_PACKET_SLOTS);
-
-  pktdrv_queue = hf_queue_create(NOC_PACKET_SLOTS);
+  pktdrv_queue = ucx_queue_create(NOC_PACKET_SLOTS);
   if (pktdrv_queue == NULL)
     panic(PANIC_OOM);
 
-  for (i = 0; i < MAX_TASKS; i++)
+  for (int32_t i = 0; i < MAX_TASKS; i++)
     pktdrv_ports[i] = 0;
 
-  for (i = 0; i < NOC_PACKET_SLOTS; i++)
-  {
-    ptr = hf_malloc(sizeof(int16_t) * NOC_PACKET_SIZE);
-    if (ptr == NULL)
-      panic(PANIC_OOM);
-    hf_queue_addtail(pktdrv_queue, ptr);
-    // printf("malloc => 0x%x\n", ptr);
-  }
+  // for (int32_t i = 0; i < NOC_PACKET_SLOTS; i++)
+  // {
+  //   void* ptr = hf_malloc(sizeof(int16_t) * NOC_PACKET_SIZE);
+  //   if (ptr == NULL) panic(PANIC_OOM);
+  //   ucx_queue_enqueue(pktdrv_queue, ptr);
+  // }
 
   uint32_t im = _di();
-  i = ni_flush(NOC_PACKET_SIZE);
+  int32_t i = ni_flush(0); // NOC_PACKET_SIZE
   _ei(im);
 
   if (i)
   {
-    _irq_register(IRQ_NOC_READ, (funcptr)ni_isr);
-    _irq_mask_set(IRQ_NOC_READ);
-    kprintf("\nKERNEL: NoC driver registered");
+    // ! _irq_register(IRQ_NOC_READ, (funcptr)ni_isr);
+    // ! _irq_mask_set(IRQ_NOC_READ);
+    
+    
+    //kprintf("\nKERNEL: NoC driver registered");
   }
   else
   {
-    kprintf("\nKERNEL: NoC NI init failed");
+    //kprintf("\nKERNEL: NoC NI init failed");
+    panic(1);
   }
 }
 
@@ -144,7 +142,7 @@ void ni_isr(void *arg)
   uint16_t act_pkt_size = ni_get_next_size();
 
   // get an slot from the global queue
-  buf_ptr = hf_queue_remhead(pktdrv_queue);
+  buf_ptr = ucx_queue_dequeue(pktdrv_queue);
 
   // if slot is valid (is NULL when no slot can be acquired)
   if (buf_ptr)
@@ -156,10 +154,10 @@ void ni_isr(void *arg)
     ni_read_packet(buf_ptr, act_pkt_size);
 
     // get rid of packets which address is not the same of this cpu
-    if (buf_ptr[PKT_TARGET_CPU] != ((NOC_COLUMN(hf_cpuid()) << 4) | NOC_LINE(hf_cpuid())))
+    if (buf_ptr[PKT_TARGET_CPU] != ucx_noc_nodeid())
     {
-      kprintf("\nKERNEL: hardware error: this is not CPU X:%d Y:%d", (buf_ptr[PKT_TARGET_CPU] & 0xf0) >> 4, buf_ptr[PKT_TARGET_CPU] & 0xf);
-      hf_queue_addtail(pktdrv_queue, buf_ptr);
+      //kprintf("\nKERNEL: hardware error: this is not CPU X:%d Y:%d", (buf_ptr[PKT_TARGET_CPU] & 0xf0) >> 4, buf_ptr[PKT_TARGET_CPU] & 0xf);
+      ucx_queue_enqueue(pktdrv_queue, buf_ptr);
       return;
     }
 
@@ -169,30 +167,30 @@ void ni_isr(void *arg)
         break;
 
     // check whether some task is running for that port
-    if (k < MAX_TASKS && krnl_tcb[k].ptask)
+    //if (k < MAX_TASKS && krnl_tcb[k].ptask)
     {
 
       // check whether the task has room for more packets in that queue
-      if (hf_queue_addtail(pktdrv_tqueue[k], buf_ptr))
+      if (ucx_queue_enqueue(pktdrv_tqueue[k], buf_ptr))
       {
-        kprintf("\nKERNEL: task (on port %d) queue full! dropping packet...", buf_ptr[PKT_TARGET_PORT]);
-        hf_queue_addtail(pktdrv_queue, buf_ptr);
+        //kprintf("\nKERNEL: task (on port %d) queue full! dropping packet...", buf_ptr[PKT_TARGET_PORT]);
+        ucx_queue_enqueue(pktdrv_queue, buf_ptr);
       }
 
       // no task is running for that port, return the buffer to the global queue
       // and drop the packet.
     }
-    else
-    {
-      kprintf("\nKERNEL: no task on port %d (offender: cpu %d port %d) - dropping packet...", buf_ptr[PKT_TARGET_PORT], buf_ptr[PKT_SOURCE_CPU], buf_ptr[PKT_SOURCE_PORT]);
-      hf_queue_addtail(pktdrv_queue, buf_ptr);
-    }
+    //else
+    //{
+      //f("\nKERNEL: no task on port %d (offender: cpu %d port %d) - dropping packet...", buf_ptr[PKT_TARGET_PORT], buf_ptr[PKT_SOURCE_CPU], buf_ptr[PKT_SOURCE_PORT]);
+    //  ucx_queue_enqueue(pktdrv_queue, buf_ptr);
+    //}
 
     // no more space in the global queue, flush
   }
   else
   {
-    kprintf("\nKERNEL: NoC queue full! dropping packet...");
+    //kprintf("\nKERNEL: NoC queue full! dropping packet...");
     ni_flush(act_pkt_size);
   }
 
@@ -217,14 +215,14 @@ int32_t hf_recvprobe(void)
   int32_t k;
   uint16_t *buf_ptr;
 
-  id = hf_selfid();
+  id = ucx_task_id();
   if (pktdrv_tqueue[id] == NULL)
     return ERR_COMM_UNFEASIBLE;
 
-  k = hf_queue_count(pktdrv_tqueue[id]);
+  k = ucx_queue_count(pktdrv_tqueue[id]);
   if (k)
   {
-    buf_ptr = hf_queue_get(pktdrv_tqueue[id], 0);
+    buf_ptr = ucx_queue_peek(pktdrv_tqueue[id]);
     if (buf_ptr)
       if (buf_ptr[PKT_CHANNEL] != 0xffff)
         return buf_ptr[PKT_CHANNEL];
@@ -260,31 +258,32 @@ int32_t hf_recv(uint16_t *source_cpu, uint16_t *source_port, int8_t *buf, uint16
 
   // printf("hf_recv: 0x%x\n", (uint32_t)buf);
 
-  id = hf_selfid();
+  id = ucx_task_id();
+
   if (pktdrv_tqueue[id] == NULL)
     return ERR_COMM_UNFEASIBLE;
 
   while (1)
   {
-    k = hf_queue_count(pktdrv_tqueue[id]);
+    k = ucx_queue_count(pktdrv_tqueue[id]);
     if (k)
     {
-      buf_ptr = hf_queue_get(pktdrv_tqueue[id], 0);
+      buf_ptr = ucx_queue_peek(pktdrv_tqueue[id]);
       if (buf_ptr)
         if (buf_ptr[PKT_CHANNEL] == channel && buf_ptr[PKT_SEQ] == seq + 1)
           break;
 
       status = _di();
-      buf_ptr = hf_queue_remhead(pktdrv_tqueue[id]);
-      hf_queue_addtail(pktdrv_tqueue[id], buf_ptr);
+      buf_ptr = ucx_queue_dequeue(pktdrv_tqueue[id]);
+      ucx_queue_enqueue(pktdrv_tqueue[id], buf_ptr);
       _ei(status);
     }
   }
 
-  // printf("queue size: 0x%x\n", hf_queue_count(pktdrv_tqueue[id]);
+  // printf("queue size: 0x%x\n", ucx_queue_count(pktdrv_tqueue[id]);
 
   status = _di();
-  buf_ptr = hf_queue_remhead(pktdrv_tqueue[id]);
+  buf_ptr = ucx_queue_dequeue(pktdrv_tqueue[id]);
   _ei(status);
 
   *source_cpu = buf_ptr[PKT_SOURCE_CPU];
@@ -292,7 +291,11 @@ int32_t hf_recv(uint16_t *source_cpu, uint16_t *source_port, int8_t *buf, uint16
   *size = buf_ptr[PKT_MSG_SIZE];
   seq = buf_ptr[PKT_SEQ];
 
-  payload_bytes = (NOC_PACKET_SIZE - PKT_HEADER_SIZE) * sizeof(uint16_t);
+
+  // 4 bytes per flit
+  uint32_t packet_size = PKT_MSG_SIZE * 4; 
+
+  payload_bytes = (packet_size - PKT_HEADER_SIZE) * sizeof(uint16_t);
   packets = (*size % payload_bytes == 0) ? (*size / payload_bytes) : (*size / payload_bytes + 1);
 
   while (++packet < packets)
@@ -300,36 +303,36 @@ int32_t hf_recv(uint16_t *source_cpu, uint16_t *source_port, int8_t *buf, uint16
     if (buf_ptr[PKT_SEQ] != seq++)
       error = ERR_SEQ_ERROR;
 
-    for (i = PKT_HEADER_SIZE; i < NOC_PACKET_SIZE; i++)
+    for (i = PKT_HEADER_SIZE; i < packet_size; i++)
     {
       buf[p++] = (uint8_t)(buf_ptr[i] >> 8);
       buf[p++] = (uint8_t)(buf_ptr[i] & 0xff);
     }
     status = _di();
-    hf_queue_addtail(pktdrv_queue, buf_ptr);
+    ucx_queue_enqueue(pktdrv_queue, buf_ptr);
     _ei(status);
 
     i = 0;
     while (1)
     {
-      k = hf_queue_count(pktdrv_tqueue[id]);
+      k = ucx_queue_count(pktdrv_tqueue[id]);
       if (k)
       {
-        buf_ptr = hf_queue_get(pktdrv_tqueue[id], 0);
+        buf_ptr = ucx_queue_peek(pktdrv_tqueue[id]);
         if (buf_ptr)
           if (buf_ptr[PKT_CHANNEL] == channel && buf_ptr[PKT_SEQ] == seq)
             break;
 
         status = _di();
-        buf_ptr = hf_queue_remhead(pktdrv_tqueue[id]);
-        hf_queue_addtail(pktdrv_tqueue[id], buf_ptr);
+        buf_ptr = ucx_queue_dequeue(pktdrv_tqueue[id]);
+        ucx_queue_enqueue(pktdrv_tqueue[id], buf_ptr);
         _ei(status);
         if (i++ > NOC_PACKET_SLOTS << 3)
           break;
       }
     }
     status = _di();
-    buf_ptr = hf_queue_remhead(pktdrv_tqueue[id]);
+    buf_ptr = ucx_queue_dequeue(pktdrv_tqueue[id]);
     _ei(status);
   }
 
@@ -337,7 +340,7 @@ int32_t hf_recv(uint16_t *source_cpu, uint16_t *source_port, int8_t *buf, uint16
     error = ERR_SEQ_ERROR;
 
   // TODO: treat endianess up to the size of the packet
-  // for (i = PKT_HEADER_SIZE; i < NOC_PACKET_SIZE && p < *size; i++){
+  // for (i = PKT_HEADER_SIZE; i < packet_size && p < *size; i++){
   for (i = PKT_HEADER_SIZE; i < buf_ptr[PKT_PAYLOAD] + 1 && p < *size; i++)
   {
     buf[p++] = (uint8_t)(buf_ptr[i] >> 8);
@@ -345,7 +348,7 @@ int32_t hf_recv(uint16_t *source_cpu, uint16_t *source_port, int8_t *buf, uint16
   }
 
   status = _di();
-  hf_queue_addtail(pktdrv_queue, buf_ptr);
+  ucx_queue_enqueue(pktdrv_queue, buf_ptr);
   _ei(status);
 
   return error;
@@ -367,11 +370,13 @@ int32_t hf_recv(uint16_t *source_cpu, uint16_t *source_port, int8_t *buf, uint16
  */
 int32_t hf_send(uint16_t target_cpu, uint16_t target_port, int8_t *buf, uint16_t size, uint16_t channel)
 {
+  #define NOC_PACKET_SIZE 64
+
   uint16_t packet = 0, packets, payload_bytes, id;
   int32_t i, p = 0;
   uint16_t out_buf[NOC_PACKET_SIZE];
 
-  id = hf_selfid();
+  id = ucx_task_id();
   if (pktdrv_tqueue[id] == NULL)
     return ERR_COMM_UNFEASIBLE;
 
@@ -380,9 +385,9 @@ int32_t hf_send(uint16_t target_cpu, uint16_t target_port, int8_t *buf, uint16_t
 
   while (++packet < packets)
   {
-    out_buf[PKT_TARGET_CPU] = (NOC_COLUMN(target_cpu) << 4) | NOC_LINE(target_cpu);
+    out_buf[PKT_TARGET_CPU] = ucx_noc_nodeid();
     out_buf[PKT_PAYLOAD] = NOC_PACKET_SIZE - 2;
-    out_buf[PKT_SOURCE_CPU] = hf_cpuid();
+    out_buf[PKT_SOURCE_CPU] = id;
     out_buf[PKT_SOURCE_PORT] = pktdrv_ports[id];
     out_buf[PKT_TARGET_PORT] = target_port;
     out_buf[PKT_MSG_SIZE] = size;
@@ -395,12 +400,12 @@ int32_t hf_send(uint16_t target_cpu, uint16_t target_port, int8_t *buf, uint16_t
     ni_write_packet(out_buf, NOC_PACKET_SIZE);
   }
 
-  out_buf[PKT_TARGET_CPU] = (NOC_COLUMN(target_cpu) << 4) | NOC_LINE(target_cpu);
+  out_buf[PKT_TARGET_CPU] = ucx_noc_nodeid();
 
   // Last packet, which most of the time is the only packet, must have size equals
   // to the number of flits in the payload plus two, instead of NOC_PACKET_SIZE.
   // COMMENTED OUT >> out_buf[PKT_PAYLOAD] = NOC_PACKET_SIZE - 2;
-  out_buf[PKT_SOURCE_CPU] = hf_cpuid();
+  out_buf[PKT_SOURCE_CPU] = ucx_task_id();
   out_buf[PKT_SOURCE_PORT] = pktdrv_ports[id];
   out_buf[PKT_TARGET_PORT] = target_port;
   out_buf[PKT_MSG_SIZE] = size;
@@ -496,14 +501,14 @@ int32_t hf_sendack(uint16_t target_cpu, uint16_t target_port, int8_t *buf, uint1
   error = hf_send(target_cpu, target_port, buf, size, channel);
   if (error == ERR_OK)
   {
-    id = hf_selfid();
+    id = ucx_task_id();
     time = _read_us() / 1000;
     while (1)
     {
-      k = hf_queue_count(pktdrv_tqueue[id]);
+      k = ucx_queue_count(pktdrv_tqueue[id]);
       if (k)
       {
-        buf_ptr = hf_queue_get(pktdrv_tqueue[id], 0);
+        buf_ptr = ucx_queue_peek(pktdrv_tqueue[id]);
         if (buf_ptr)
           if (buf_ptr[PKT_CHANNEL] == 0x7fff && buf_ptr[PKT_MSG_SIZE] == 3)
             break;
