@@ -4,7 +4,11 @@ TARGET_LIST = \
 	'riscv/hf-riscv-llvm' 'riscv/riscv32-qemu' 'riscv/riscv32-qemu-llvm' \
 	'riscv/riscv64-qemu' 'riscv/riscv64-qemu-llvm'
 
-#ARCH = none
+NOC_X = $(shell echo $$(( $(NOC_DIM_X) - 1 )) )
+NOC_Y = $(shell echo $$(( $(NOC_DIM_Y) - 1 )) )
+
+NOC_X ?= 4
+NOC_Y ?= 4
 
 SERIAL_BAUD=57600
 SERIAL_DEVICE=/dev/ttyUSB0
@@ -22,11 +26,9 @@ BUILD_TARGET_DIR = $(BUILD_DIR)/target
 
 INC_DIRS += -I $(SRC_DIR)/include
 
-#.PHONY: incl
-
 incl:
 ifeq ('$(ARCH)', 'none')
-	@echo "You must specify a target architecture (ARCH=arch/target)."
+	@echo "You must specify target architecture (ARCH=arch/target)."
 	@echo "Supported targets are: $(TARGET_LIST)"
 else
 	@echo "ARCH = $(ARCH)" > $(BUILD_TARGET_DIR)/target.mak
@@ -57,12 +59,13 @@ run_versatilepb:
 	qemu-system-arm -cpu arm1176 -m 128 -M versatilepb -serial stdio -kernel $(BUILD_TARGET_DIR)/image.elf
 
 ## kernel
-ucx: incl hal libs kernel devices
-	mv *.o $(SRC_DIR)/build/kernel
-	$(AR) $(ARFLAGS) $(BUILD_TARGET_DIR)/libucxos.a \
-		$(BUILD_KERNEL_DIR)/*.o
+ucx.pack: incl hal.pack libs.pack kernel.pack devices.pack 
+	cp *.o $(SRC_DIR)/build/kernel
+	$(AR) $(ARFLAGS) $(BUILD_TARGET_DIR)/libucxos.a $(BUILD_KERNEL_DIR)/*.o
+	echo null > ucx.pack
 
-kernel: pipe.o semaphore.o ucx.o main.o
+kernel.pack: pipe.o semaphore.o ucx.o main.o
+	@echo null > kernel.pack
 
 main.o: $(SRC_DIR)/init/main.c
 	$(CC) $(CFLAGS) $(SRC_DIR)/init/main.c
@@ -73,7 +76,8 @@ semaphore.o: $(SRC_DIR)/kernel/semaphore.c
 pipe.o: $(SRC_DIR)/kernel/pipe.c
 	$(CC) $(CFLAGS) $(SRC_DIR)/kernel/pipe.c
 
-libs: libc.o dump.o malloc.o list.o queue.o noc.o
+libs.pack: libc.o dump.o malloc.o list.o queue.o noc.o
+	@echo null > libs.pack
 
 queue.o: $(SRC_DIR)/lib/queue.c
 	$(CC) $(CFLAGS) $(SRC_DIR)/lib/queue.c
@@ -86,9 +90,10 @@ dump.o: $(SRC_DIR)/lib/dump.c
 libc.o: $(SRC_DIR)/lib/libc.c
 	$(CC) $(CFLAGS) $(SRC_DIR)/lib/libc.c
 noc.o: $(SRC_DIR)/lib/noc.c
-	$(CC) $(CFLAGS) $(SRC_DIR)/lib/noc.c
+	$(CC) $(CFLAGS) $(SRC_DIR)/lib/noc.c -DNOC_Y=$(NOC_Y) -DNOC_X=$(NOC_X)
 		
-devices: ddma.o
+devices.pack: ddma.o
+	@echo null > devices.pack
 
 ddma.o: $(SRC_DIR)/device/ddma.c
 	$(CC) $(CFLAGS) $(SRC_DIR)/device/ddma.c
@@ -121,7 +126,7 @@ echo: rebuild
 	$(CC) $(CFLAGS) -o $(BUILD_APP_DIR)/echo.o app/echo.c
 	@$(MAKE) --no-print-directory link
 
-hello: rebuild
+hello: incl ucx.pack 
 	$(CC) $(CFLAGS) -o $(BUILD_APP_DIR)/hello.o app/hello.c
 	@$(MAKE) --no-print-directory link
 
@@ -175,36 +180,28 @@ rebuild:
 
 clean:
 	find '$(BUILD_APP_DIR)' '$(BUILD_KERNEL_DIR)' -type f -name '*.o' -delete
-	find '$(BUILD_TARGET_DIR)' -type f -name '*.o' -delete -o -name '*~' \
-		-delete -o -name 'image.*' -delete -o -name 'code.*' -delete
+	find '$(BUILD_TARGET_DIR)' -type f -name '*.o' -delete -o -name '*~' -delete \
+		-o -name 'image.*' -delete -o -name 'code.*' -delete
+	find '$(SRC_DIR)' -type f -name '*.pack' -delete 
+	find '$(SRC_DIR)' -type f -name '*.o' -delete 
 
 veryclean: clean
 	echo "ARCH = none" > $(BUILD_TARGET_DIR)/target.mak
 	find '$(BUILD_TARGET_DIR)' -type f -name '*.a' -delete
+	find '$(SRC_DIR)/img' -type f -name  'build*' -delete
 
-# generate images
-NOC_X ?= 4
-NOC_Y ?= 4
+NOC_X_SEQ = $(shell seq 0 $(NOC_X))
+NOC_Y_SEQ = $(shell seq 0 $(NOC_Y))
 
-NOC_DIM_X = $(shell seq 1 ${NOC_X})
-NOC_DIM_Y = $(shell seq 1 ${NOC_Y})
-
-genimgs:
-	for x in $(NOC_DIM_X); do \
-		for y in $(NOC_DIM_Y); do \
-			FILENAME=$$x-$$y ; \
-			echo "Making image XY=("$$x","$$y")"; \
-			make genimg X_ADDR=$$x Y_ADDR=$$y ; \
+imgs.pack:
+	for x in $(NOC_X_SEQ); do \
+		for y in $(NOC_Y_SEQ); do \
+			echo "==================================================="; \
+			echo "Generating software image for PE XY=("$$x","$$y")"; \
+			echo "==================================================="; \
+			make hello ARCH=riscv/hf-riscv-e --no-print-directory NOC_X=$$x NOC_Y=$$y ; \
+			cp -r ./build img/build-$$x-$$y ; \
+			rm -rf noc.o ; \
 		done ; \
 	done
-	
-
-X_ADDR ?= 0
-Y_ADDR ?= 0
-
-genimg:
-	@echo "generating for.. " $(X_ADDR) $(Y_ADDR)
-
-# make ucx X_ADDR=$(X_ADDR) Y_ADDR=$(Y_ADDR)
-
-
+	$(make) clean veryclean

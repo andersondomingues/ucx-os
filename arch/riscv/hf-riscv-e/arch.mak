@@ -25,9 +25,13 @@ OBJ = riscv64-elf-objcopy
 SIZE = riscv64-elf-size
 AR = riscv64-elf-ar
 
-hal:
-	$(AS) $(ASFLAGS) -o crt0.o $(ARCH_DIR)/crt0.s
-	$(CC) $(CFLAGS) \
-		$(ARCH_DIR)/hal.c \
+HAL_SRC = $(ARCH_DIR)/hal.c \
 		$(ARCH_DIR)/interrupt.c \
 		$(ARCH_DIR)/../../common/muldiv.c
+
+hal.pack: crt0.o $(HAL_SRC)
+	$(CC) $(CFLAGS) $(HAL_SRC)
+	echo null > hal.pack
+
+crt0.o: 
+	$(AS) $(ASFLAGS) -o crt0.o $(ARCH_DIR)/crt0.s
