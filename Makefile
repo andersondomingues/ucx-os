@@ -188,7 +188,7 @@ clean:
 veryclean: clean
 	echo "ARCH = none" > $(BUILD_TARGET_DIR)/target.mak
 	find '$(BUILD_TARGET_DIR)' -type f -name '*.a' -delete
-	find '$(SRC_DIR)/img' -type f -name  'build*' -delete
+	rm -rf img/build*
 
 NOC_X_SEQ = $(shell seq 0 $(NOC_X))
 NOC_Y_SEQ = $(shell seq 0 $(NOC_Y))
@@ -200,8 +200,9 @@ imgs.pack:
 			echo "Generating software image for PE XY=("$$x","$$y")"; \
 			echo "==================================================="; \
 			make hello ARCH=riscv/hf-riscv-e --no-print-directory NOC_X=$$x NOC_Y=$$y ; \
-			cp -r ./build img/build-$$x-$$y ; \
+			mkdir -p img/build-$$x-$$y ; \
+			cp -r ./build/target/* img/build-$$x-$$y ; \
 			rm -rf noc.o ; \
 		done ; \
 	done
-	$(make) clean veryclean
+	@$(MAKE) clean
